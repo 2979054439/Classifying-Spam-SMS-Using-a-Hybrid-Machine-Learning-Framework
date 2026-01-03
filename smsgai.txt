@@ -1,0 +1,314 @@
+# 核心依赖：pandas, numpy, matplotlib, scikit-learn, nltk（已通过pip安装）
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.model_selection import train_test_split
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.preprocessing import LabelEncoder
+from sklearn.decomposition import PCA
+from sklearn.cluster import KMeans
+from sklearn.metrics import classification_report, confusion_matrix, silhouette_score, adjusted_rand_score
+from sklearn.naive_bayes import MultinomialNB
+from sklearn.svm import SVC
+from sklearn.ensemble import RandomForestClassifier
+import nltk
+from nltk.corpus import stopwords
+import re
+import matplotlib
+matplotlib.font_manager.fontManager.addfont("C:/Windows/Fonts/msyh.ttc")  # 微软雅黑
+matplotlib.rcParams['font.sans-serif'] = ['Microsoft YaHei']
+matplotlib.rcParams['axes.unicode_minus'] = False
+
+# 下载NLTK停用词（仅首次运行需要，下载一次后下次无需重复）
+try:
+    stopwords.words('english')  # 检查是否已下载
+except LookupError:
+    nltk.download('stopwords')
+
+# --------------------------
+# 1. 加载数据集（确保路径正确）
+# --------------------------
+def load_data(file_path):
+    """加载SMS垃圾短信数据集"""
+    try:
+        df = pd.read_csv(file_path, sep='\t', names=['label', 'text'], encoding='utf-8')
+        print(f"✅ 数据集加载成功！形状: {df.shape}")
+        print(f"标签分布:\n{df['label'].value_counts()}\n")
+        return df
+    except FileNotFoundError:
+        print(f"❌ 错误：找不到文件 {file_path}")
+        print("请检查文件路径是否正确，例如：")
+        print("Windows: r'C:\\Users\\你的用户名\\桌面\\sms\\SMSSpamCollection.txt'")
+        print("Mac/Linux: '/Users/你的用户名/Desktop/sms/SMSSpamCollection.txt'")
+        exit()
+
+# 🔴 请根据你的实际文件路径修改这里！
+file_path = r"D:\Program Files\SMSSpamCollection"
+df = load_data(file_path)
+
+# --------------------------
+# 2. 文本清洗 + 标签编码
+# --------------------------
+def clean_text(text):
+    """文本清洗：小写、移除特殊字符/数字、去多余空格"""
+    text = text.lower()
+    text = re.sub(r'[^a-zA-Z\s]', '', text)  # 只保留字母和空格
+    text = re.sub(r'\s+', ' ', text).strip()  # 合并连续空格
+    return text
+
+# 应用清洗
+df['cleaned_text'] = df['text'].apply(clean_text)
+
+# 标签编码（ham=0，spam=1）
+le = LabelEncoder()
+df['label_encoded'] = le.fit_transform(df['label'])
+
+# --------------------------
+# 3. TF-IDF特征提取
+# --------------------------
+tfidf_vectorizer = TfidfVectorizer(
+    max_features=5000,  # 保留Top5000高频词
+    stop_words=stopwords.words('english'),  # 移除停用词（如the, and）
+    ngram_range=(1, 2),  # 保留单字（如"free"）和双字（如"free gift"）
+    min_df=2,  # 至少出现2次的词才保留
+    max_df=0.95  # 过滤过于常见的词（出现率>95%）
+)
+
+# 生成特征矩阵（关键：先创建再使用）
+X_tfidf = tfidf_vectorizer.fit_transform(df['cleaned_text'])
+y = df['label_encoded']
+print(f"✅ TF-IDF特征矩阵生成成功！形状: {X_tfidf.shape}（样本数 × 特征数）\n")
+
+# --------------------------
+# 4. 分类任务（监督学习）
+# --------------------------
+# 分割训练集/测试集（分层抽样，保证标签分布一致）
+X_train, X_test, y_train, y_test = train_test_split(
+    X_tfidf, y, test_size=0.3, random_state=42, stratify=y
+)
+
+# 初始化3个经典分类器
+classifiers = {
+    '朴素贝叶斯': MultinomialNB(),  # 轻量、快速，适合文本分类
+    '线性SVM': SVC(kernel='linear', probability=True, random_state=42),  # 分类效果好
+    '随机森林': RandomForestClassifier(n_estimators=100, random_state=42)  # 鲁棒性强
+}
+
+# 训练并评估分类器
+def evaluate_classifiers(classifiers, X_train, X_test, y_train, y_test):
+    results = {}
+    for name, clf in classifiers.items():
+        clf.fit(X_train, y_train)  # 训练
+        y_pred = clf.predict(X_test)  # 预测
+        
+        # 计算评估指标
+        report = classification_report(y_test, y_pred, target_names=['正常短信', '垃圾短信'], output_dict=True)
+        cm = confusion_matrix(y_test, y_pred)
+        
+        # 保存结果
+        results[name] = {
+            '准确率': report['accuracy'],
+            '精确率': report['weighted avg']['precision'],
+            '召回率': report['weighted avg']['recall'],
+            'F1分数': report['weighted avg']['f1-score'],
+            '混淆矩阵': cm
+        }
+        
+        # 打印结果
+        print(f"=== {name} 性能 ===")
+        print(f"准确率: {report['accuracy']:.4f}")
+        print(f"F1分数: {report['weighted avg']['f1-score']:.4f}\n")
+    
+    return results
+
+# 执行分类评估
+print("📊 开始训练分类器...")
+classification_results = evaluate_classifiers(classifiers, X_train, X_test, y_train, y_test)
+
+# --------------------------
+# 5. 分类结果可视化（纯matplotlib）
+# --------------------------
+# 混淆矩阵可视化
+fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+colors = ['#1f77b4', '#ff7f0e', '#2ca02c']  # 每个分类器的颜色
+
+for idx, (name, result) in enumerate(classification_results.items()):
+    cm = result['混淆矩阵']
+    # 绘制热力图
+    im = axes[idx].imshow(cm, cmap='Blues', alpha=0.8)
+    # 添加数值标注
+    for i in range(2):
+        for j in range(2):
+            axes[idx].text(j, i, str(cm[i, j]), ha='center', va='center', fontsize=14, fontweight='bold')
+    # 设置标签
+    axes[idx].set_xticks([0, 1])
+    axes[idx].set_yticks([0, 1])
+    axes[idx].set_xticklabels(['正常短信', '垃圾短信'])
+    axes[idx].set_yticklabels(['正常短信', '垃圾短信'])
+    axes[idx].set_title(f'{name} - 混淆矩阵', fontsize=12)
+    axes[idx].set_xlabel('预测标签', fontsize=10)
+    axes[idx].set_ylabel('真实标签', fontsize=10)
+    # 颜色条
+    plt.colorbar(im, ax=axes[idx], shrink=0.7)
+
+plt.tight_layout()
+plt.show()
+
+# 分类器性能对比柱状图
+metrics_df = pd.DataFrame(classification_results).T[['准确率', '精确率', '召回率', 'F1分数']]
+metrics_df.plot(kind='bar', figsize=(10, 6), rot=0, color=['#1f77b4', '#ff7f0e', '#2ca02c', '#d62728'])
+plt.title('分类器性能对比', fontsize=14)
+plt.ylabel('分数', fontsize=12)
+plt.ylim(0.9, 1.0)  # 放大差异
+plt.grid(axis='y', alpha=0.3)
+plt.legend(loc='upper right')
+plt.tight_layout()
+plt.show()
+
+# --------------------------
+# 6. 聚类任务（无监督学习）
+# --------------------------
+# PCA降维（高维特征→2维，用于可视化）
+print("🔍 开始聚类分析...")
+pca = PCA(n_components=2, random_state=42)
+X_pca = pca.fit_transform(X_tfidf.toarray())  # 稀疏矩阵转稠密矩阵
+print(f"PCA降维完成！累计解释方差: {pca.explained_variance_ratio_.sum():.3f}\n")
+
+# 构建PCA结果DataFrame
+pca_df = pd.DataFrame({
+    'PC1': X_pca[:, 0],
+    'PC2': X_pca[:, 1],
+    '真实标签': df['label'],
+    '标签编码': df['label_encoded']
+})
+
+# 寻找K-means最佳K值（肘部法则+轮廓系数）
+inertia = []  # 簇内平方和（越小越好）
+silhouette_scores = []  # 轮廓系数（越接近1越好）
+k_range = range(2, 8)
+
+for k in k_range:
+    kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
+    kmeans.fit(X_tfidf)
+    inertia.append(kmeans.inertia_)
+    silhouette_scores.append(silhouette_score(X_tfidf, kmeans.labels_))
+
+# 可视化最佳K值
+plt.figure(figsize=(12, 4))
+# 肘部法则图
+plt.subplot(1, 2, 1)
+plt.plot(k_range, inertia, 'bo-', linewidth=2)
+plt.xlabel('聚类数量 k')
+plt.ylabel('簇内平方和')
+plt.title('肘部法则（找最佳k）')
+plt.grid(alpha=0.3)
+
+# 轮廓系数图
+plt.subplot(1, 2, 2)
+plt.plot(k_range, silhouette_scores, 'ro-', linewidth=2)
+plt.xlabel('聚类数量 k')
+plt.ylabel('轮廓系数')
+plt.title('轮廓系数分析（找最佳k）')
+plt.grid(alpha=0.3)
+
+plt.tight_layout()
+plt.show()
+
+# 最佳K=2（对应正常/垃圾短信）
+optimal_k = 2
+kmeans = KMeans(n_clusters=optimal_k, random_state=42, n_init=10)
+kmeans_labels = kmeans.fit_predict(X_tfidf)
+
+# 聚类效果评估
+print(f"=== K-means聚类结果（k={optimal_k}）===")
+print(f"轮廓系数: {silhouette_score(X_tfidf, kmeans_labels):.4f}（越接近1越好）")
+print(f"调整兰德指数: {adjusted_rand_score(y, kmeans_labels):.4f}（越接近1越好）\n")
+
+# --------------------------
+# 7. 聚类结果可视化与分析
+# --------------------------
+# 添加聚类标签到PCA结果
+pca_df['聚类标签'] = kmeans_labels
+
+# 可视化：真实标签 vs 聚类结果
+fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+
+# 真实标签分布
+axes[0].scatter(
+    pca_df[pca_df['真实标签']=='ham']['PC1'],
+    pca_df[pca_df['真实标签']=='ham']['PC2'],
+    alpha=0.6, label='正常短信', s=30, color='#1f77b4'
+)
+axes[0].scatter(
+    pca_df[pca_df['真实标签']=='spam']['PC1'],
+    pca_df[pca_df['真实标签']=='spam']['PC2'],
+    alpha=0.6, label='垃圾短信', s=30, color='#ff7f0e'
+)
+axes[0].set_title('真实标签分布', fontsize=12)
+axes[0].set_xlabel('PC1')
+axes[0].set_ylabel('PC2')
+axes[0].legend()
+axes[0].grid(alpha=0.3)
+
+# 聚类结果分布
+axes[1].scatter(
+    pca_df[pca_df['聚类标签']==0]['PC1'],
+    pca_df[pca_df['聚类标签']==0]['PC2'],
+    alpha=0.6, label='聚类0', s=30, color='#1f77b4'
+)
+axes[1].scatter(
+    pca_df[pca_df['聚类标签']==1]['PC1'],
+    pca_df[pca_df['聚类标签']==1]['PC2'],
+    alpha=0.6, label='聚类1', s=30, color='#ff7f0e'
+)
+axes[1].set_title('K-means聚类结果', fontsize=12)
+axes[1].set_xlabel('PC1')
+axes[1].set_ylabel('PC2')
+axes[1].legend()
+axes[1].grid(alpha=0.3)
+
+# 聚类中心可视化
+centers_pca = pca.transform(kmeans.cluster_centers_)
+axes[2].scatter(
+    pca_df['PC1'], pca_df['PC2'],
+    c=pca_df['聚类标签'], cmap='viridis', alpha=0.3, s=30
+)
+axes[2].scatter(
+    centers_pca[:, 0], centers_pca[:, 1],
+    c='red', marker='X', s=200, label='聚类中心'
+)
+axes[2].set_title('聚类中心可视化', fontsize=12)
+axes[2].set_xlabel('PC1')
+axes[2].set_ylabel('PC2')
+axes[2].legend()
+axes[2].grid(alpha=0.3)
+
+plt.tight_layout()
+plt.show()
+
+# 聚类与真实标签交叉分析
+cross_tab = pd.crosstab(
+    index=kmeans_labels, 
+    columns=df['label'], 
+    rownames=['聚类标签'], 
+    colnames=['真实标签']
+)
+print("聚类与真实标签交叉表:")
+print(cross_tab)
+print(f"\n聚类0中正常短信占比: {cross_tab.loc[0, 'ham'] / cross_tab.loc[0].sum():.2%}")
+print(f"聚类1中垃圾短信占比: {cross_tab.loc[1, 'spam'] / cross_tab.loc[1].sum():.2%}\n")
+
+# 提取聚类关键词（每个聚类的核心特征词）
+def get_cluster_keywords(vectorizer, kmeans_model, n_words=10):
+    feature_names = vectorizer.get_feature_names_out()
+    keywords = {}
+    for cluster_id in range(kmeans_model.n_clusters):
+        # 聚类中心权重最高的词
+        top_indices = kmeans_model.cluster_centers_[cluster_id].argsort()[-n_words:][::-1]
+        keywords[cluster_id] = [feature_names[idx] for idx in top_indices]
+    return keywords
+
+cluster_keywords = get_cluster_keywords(tfidf_vectorizer, kmeans)
+print("各聚类核心关键词:")
+for cluster, words in cluster_keywords.items():
+    print(f"聚类{cluster}: {', '.join(words)}")
